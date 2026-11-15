@@ -1,4 +1,4 @@
-# Bridge Snap
+# PassProxy
 
 一个可直接关联 Cloudflare Dashboard 的 gzip 请求中转 Worker。
 
@@ -116,7 +116,7 @@ npm run deploy
 仓库中的 `wrangler.jsonc` 已启用 `workers_dev`，部署后可在 Worker 的 `Settings > Domains & Routes` 中看到类似地址：
 
 ```text
-https://bridge-snap.<你的Cloudflare子域名>.workers.dev
+https://passproxy.<你的Cloudflare子域名>.workers.dev
 ```
 
 ### 3. 配置变量和密钥
@@ -155,7 +155,7 @@ Authorization: Bearer <UPSTREAM_API_KEY>
 ### 4. 检查服务
 
 ```powershell
-curl.exe https://bridge-snap.<你的Cloudflare子域名>.workers.dev/health
+curl.exe https://passproxy.<你的Cloudflare子域名>.workers.dev/health
 ```
 
 预期返回：
@@ -169,7 +169,7 @@ curl.exe https://bridge-snap.<你的Cloudflare子域名>.workers.dev/health
 ### PowerShell
 
 ```powershell
-$url = "https://bridge-snap.<你的Cloudflare子域名>.workers.dev/v1/chat/completions"
+$url = "https://passproxy.<你的Cloudflare子域名>.workers.dev/v1/chat/completions"
 $token = "<CLIENT_TOKEN>"
 
 $json = @{
@@ -209,7 +209,7 @@ curl.exe -X POST $url `
 ### Node.js 冒烟脚本
 
 ```powershell
-$env:WORKER_URL = "https://bridge-snap.<你的Cloudflare子域名>.workers.dev"
+$env:WORKER_URL = "https://passproxy.<你的Cloudflare子域名>.workers.dev"
 $env:CLIENT_TOKEN = "<CLIENT_TOKEN>"
 
 # 按实际上游接口修改

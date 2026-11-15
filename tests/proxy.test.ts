@@ -20,7 +20,7 @@ function makeRequest(
   extraHeaders: Record<string, string> = {},
   path = "/v1/chat/completions",
 ): Request {
-  return new Request(`https://relay.example.workers.dev${path}`, {
+  return new Request(`https://passproxy.example.workers.dev${path}`, {
     method: body === null ? "GET" : "POST",
     headers: {
       "content-type": "application/json",
@@ -34,7 +34,7 @@ function makeRequest(
 describe("gzip relay worker", () => {
   it("reports health without requiring a proxy token", async () => {
     const response = await handleRequest(
-      new Request("https://relay.example.workers.dev/health"),
+      new Request("https://passproxy.example.workers.dev/health"),
       env,
     );
 
@@ -45,7 +45,7 @@ describe("gzip relay worker", () => {
 
   it("answers browser preflight requests with the configured origin", async () => {
     const response = await handleRequest(
-      new Request("https://relay.example.workers.dev/v1/chat/completions", {
+      new Request("https://passproxy.example.workers.dev/v1/chat/completions", {
         method: "OPTIONS",
         headers: { origin: "https://app.example.com" },
       }),
