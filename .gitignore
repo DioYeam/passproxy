@@ -1,0 +1,8 @@
+node_modules/
+.wrangler/
+dist/
+coverage/
+.dev.vars
+*.log
+body.json
+body.json.gz
