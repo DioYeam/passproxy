@@ -1,0 +1,6 @@
+UPSTREAM_BASE_URL=https://api.example.com
+CLIENT_TOKEN=replace-with-a-long-random-client-token
+UPSTREAM_API_KEY=replace-with-the-upstream-api-key
+ALLOWED_ORIGIN=*
+MAX_DECOMPRESSED_BYTES=2097152
+UPSTREAM_TIMEOUT_MS=600000
