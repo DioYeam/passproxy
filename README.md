@@ -15,7 +15,7 @@ npm run smoke:chunks -- `
   --worker-url https://passproxy.<你的Cloudflare子域名>.workers.dev `
   --token <CLIENT_TOKEN> `
   --body-file body.json `
-  --target-path /chat/completions
+  --target-path /v1/chat/completions
 ```
 
 主要限制：

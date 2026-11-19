@@ -13,7 +13,7 @@ protocolVersion = 1
 - PassProxy 已配置 `CLIENT_TOKEN`、`UPSTREAM_BASE_URL` 和 `UPSTREAM_API_KEY`。
 - 客户端能够访问 PassProxy 的 `workers.dev` 地址或桥转发地址。
 - 原始请求体是完整 JSON 字节。
-- 模型接口使用 OpenAI Chat Completions，例如 `/chat/completions`。
+- 模型接口使用 OpenAI Chat Completions，例如 `/v1/chat/completions`。
 - 客户端能够缓存完整请求体，并对 gzip 数据做分片。
 
 ## 2. 核心原则
@@ -69,7 +69,7 @@ X-Proxy-Token: <CLIENT_TOKEN>
   "protocolVersion": 1,
   "target": {
     "method": "POST",
-    "path": "/chat/completions",
+    "path": "/v1/chat/completions",
     "query": ""
   },
   "contentType": "application/json",
@@ -92,7 +92,7 @@ X-Proxy-Token: <CLIENT_TOKEN>
 | 字段 | 说明 |
 | --- | --- |
 | `target.method` | 当前协议固定为 `POST` |
-| `target.path` | DeepSeek 路径，必须以 `/` 开头，例如 `/chat/completions` |
+| `target.path` | DeepSeek 路径，必须以 `/` 开头，例如 `/v1/chat/completions` |
 | `target.query` | 查询字符串，不带开头的 `?` |
 | `contentType` | 原始请求内容类型，通常是 `application/json` |
 | `contentEncoding` | 固定为 `gzip` |
@@ -103,6 +103,12 @@ X-Proxy-Token: <CLIENT_TOKEN>
 | `totalParts` | 分片总数 |
 | `partSize` | 客户端分片大小，建议 `65536` |
 | `headers` | 需要转给 DeepSeek 的业务请求头 |
+
+路径兼容规则：
+
+- `/v1/chat/completions` 是默认推荐路径，兼容 OpenAI Chat Completions。
+- `/chat/completions` 仍然支持，已有的桥不需要立即修改。
+- 如果 `UPSTREAM_BASE_URL` 已经包含 `/v1`，则 `target.path` 应使用 `/chat/completions`，避免拼出 `/v1/v1/chat/completions`。
 
 不要放入 `headers`：
 
@@ -209,7 +215,7 @@ manifest = {
     "protocolVersion": 1,
     "target": {
         "method": "POST",
-        "path": "/chat/completions",
+        "path": "/v1/chat/completions",
         "query": ""
     },
     "contentType": "application/json",
@@ -269,7 +275,7 @@ $env:CLIENT_TOKEN = "<CLIENT_TOKEN>"
 
 npm run smoke:chunks -- `
   --body-file body.json `
-  --target-path /chat/completions `
+  --target-path /v1/chat/completions `
   --part-size 65536 `
   --concurrency 3
 ```
@@ -281,7 +287,7 @@ npm run smoke:chunks -- `
   --worker-url https://passproxy.1424286521a.workers.dev `
   --token <CLIENT_TOKEN> `
   --body-file body.json `
-  --target-path /chat/completions `
+  --target-path /v1/chat/completions `
   --part-size 65536 `
   --concurrency 3
 ```

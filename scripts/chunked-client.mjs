@@ -213,7 +213,7 @@ function parseArgs(argv) {
     workerUrl: process.env.WORKER_URL,
     token: process.env.CLIENT_TOKEN,
     bodyFile: process.env.BODY_FILE || "body.json",
-    targetPath: process.env.TARGET_PATH || "/chat/completions",
+    targetPath: process.env.TARGET_PATH || "/v1/chat/completions",
     query: process.env.TARGET_QUERY || "",
     partSize: Number(process.env.PART_SIZE || DEFAULT_PART_BYTES),
     concurrency: Number(process.env.CONCURRENCY || 3),

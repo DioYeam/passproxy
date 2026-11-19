@@ -38,7 +38,7 @@ Request body:
   "protocolVersion": 1,
   "target": {
     "method": "POST",
-    "path": "/chat/completions",
+    "path": "/v1/chat/completions",
     "query": ""
   },
   "contentType": "application/json",
@@ -57,6 +57,8 @@ Request body:
 ```
 
 The path is relative to `UPSTREAM_BASE_URL`. It must begin with `/` and must not point to a different origin.
+
+Both `/v1/chat/completions` and `/chat/completions` are supported. `/v1/chat/completions` is the default for OpenAI-compatible clients. If `UPSTREAM_BASE_URL` already ends in `/v1`, use `/chat/completions` to avoid duplicating the version segment.
 
 Response:
 
@@ -211,7 +213,7 @@ parts = [compressed[i:i + 65536] for i in range(0, len(compressed), 65536)]
 
 manifest = {
     "protocolVersion": 1,
-    "target": {"method": "POST", "path": "/chat/completions", "query": ""},
+    "target": {"method": "POST", "path": "/v1/chat/completions", "query": ""},
     "contentType": "application/json",
     "contentEncoding": "gzip",
     "compressedBytes": len(compressed),

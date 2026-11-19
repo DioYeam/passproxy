@@ -55,12 +55,13 @@ describe("chunked client example", () => {
   it("gzip-compresses, splits, uploads, and finalizes one identical body", async () => {
     const parts = new Map<number, Buffer>();
     let completedBody: Buffer | undefined;
+    let manifestPath: string | undefined;
     const server = createServer(async (request, response) => {
       const url = new URL(request.url ?? "/", "http://127.0.0.1");
 
       if (request.method === "POST" && url.pathname === "/__chunks/sessions") {
         const manifest = JSON.parse((await readRequest(request)).toString("utf8"));
-        expect(manifest.target.path).toBe("/chat/completions");
+        manifestPath = manifest.target.path;
         expect(manifest.contentEncoding).toBe("gzip");
         response.setHeader("content-type", "application/json");
         response.end(JSON.stringify({
@@ -149,8 +150,6 @@ describe("chunked client example", () => {
       "client-secret",
       "--body-file",
       bodyPath,
-      "--target-path",
-      "/chat/completions",
       "--part-size",
       "65536",
       "--concurrency",
@@ -158,6 +157,7 @@ describe("chunked client example", () => {
     ]);
 
     expect(result.code, result.stderr).toBe(0);
+    expect(manifestPath).toBe("/v1/chat/completions");
     const responseBody = JSON.parse(result.stdout);
     expect(responseBody.body).toBe(original);
     expect(responseBody.sha256).toBe(sha256(Buffer.from(original)));
