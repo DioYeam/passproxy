@@ -1,5 +1,34 @@
 # PassProxy
 
+## 大请求分片上传
+
+PassProxy 支持超过网关单请求限制的分片上传协议。桥先对整个 JSON 做一次 gzip，再按 64 KiB 上传分片；Durable Object 汇总所有分片，校验长度和 SHA-256，解压后只向 DeepSeek 发送一次请求。
+
+完整客户端协议、请求示例、错误处理和 Python 伪代码：
+
+[分片上传协议](docs/chunked-upload-protocol.md)
+
+参考客户端：
+
+```powershell
+npm run smoke:chunks -- `
+  --worker-url https://passproxy.<你的Cloudflare子域名>.workers.dev `
+  --token <CLIENT_TOKEN> `
+  --body-file body.json `
+  --target-path /chat/completions
+```
+
+主要限制：
+
+- 推荐分片：64 KiB。
+- 单分片最大：96 KiB。
+- 最大分片数：256。
+- gzip 请求体最大：8 MiB。
+- 解压请求体默认最大：2 MiB。
+- 会话有效期：15 分钟。
+
+原有直传 gzip 接口保持兼容，分片协议只在 `/__chunks/sessions` 路径下生效。
+
 一个可直接关联 Cloudflare Dashboard 的 gzip 请求中转 Worker。
 
 它接收带 `Content-Encoding: gzip` 的 HTTP 请求，在 Cloudflare 边缘解压后转发给 OpenAI 兼容的大模型服务，并把上游响应（包括 SSE 流）直接返回给调用方。

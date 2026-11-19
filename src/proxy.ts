@@ -153,7 +153,7 @@ function internalChunkRequest(
     "x-passproxy-request-id": requestId,
     ...extraHeaders,
   });
-  if (body !== undefined) {
+  if (body !== undefined && !headers.has("content-type")) {
     headers.set("content-type", "application/octet-stream");
   }
 

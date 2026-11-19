@@ -232,4 +232,32 @@ describe("chunk session assembly", () => {
       session.putPart(0, compressed, digest(compressed)),
     ).rejects.toMatchObject({ code: "session_expired" });
   });
+
+  it("allows a session to be completed only once", async () => {
+    const original = encoder.encode("{}");
+    const compressed = new Uint8Array(gzipSync(original));
+    const storage = new MemoryStorage();
+    const session = new ChunkSessionCore(storage, limits, () => 1_000);
+    await session.create(manifestFor(original, compressed, 1));
+    await session.putPart(0, compressed, digest(compressed));
+    await session.complete();
+
+    await expect(session.complete()).rejects.toMatchObject({
+      code: "session_consumed",
+    });
+  });
+
+  it("rejects a stored part that was modified after upload", async () => {
+    const original = encoder.encode("{}");
+    const compressed = new Uint8Array(gzipSync(original));
+    const storage = new MemoryStorage();
+    const session = new ChunkSessionCore(storage, limits, () => 1_000);
+    await session.create(manifestFor(original, compressed, 1));
+    await session.putPart(0, compressed, digest(compressed));
+    storage.values.set("part:0", encoder.encode("tampered"));
+
+    await expect(session.complete()).rejects.toMatchObject({
+      code: "invalid_chunk_hash",
+    });
+  });
 });
