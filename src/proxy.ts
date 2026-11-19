@@ -1,3 +1,4 @@
+import { ChunkProtocolError } from "./chunk-protocol";
 import { ConfigurationError, readConfig } from "./config";
 import type { Env, RuntimeConfig } from "./config";
 import {
@@ -6,33 +7,23 @@ import {
   PayloadTooLargeError,
   UnsupportedContentEncodingError,
 } from "./gzip";
-
-type UpstreamFetch = (request: Request) => Promise<Response>;
+import {
+  forwardUpstream,
+  UpstreamTimeoutError,
+  UpstreamUnreachableError,
+} from "./upstream";
+import type { UpstreamFetch } from "./upstream";
 
 export interface Dependencies {
   fetch?: UpstreamFetch;
 }
 
-const HOP_BY_HOP_HEADERS = [
-  "connection",
-  "keep-alive",
-  "proxy-authenticate",
-  "proxy-authorization",
-  "te",
-  "trailer",
-  "transfer-encoding",
-  "upgrade",
-];
-
-const CLOUDFLARE_HEADERS = [
-  "cf-connecting-ip",
-  "cf-ipcountry",
-  "cf-ray",
-  "cf-visitor",
-  "cdn-loop",
-  "x-forwarded-proto",
-  "x-real-ip",
-];
+const CREATE_SESSION_PATH = /^\/__chunks\/sessions$/;
+const UPLOAD_PART_PATH =
+  /^\/__chunks\/sessions\/([A-Za-z0-9_-]+)\/parts\/(\d+)$/;
+const COMPLETE_SESSION_PATH =
+  /^\/__chunks\/sessions\/([A-Za-z0-9_-]+)\/complete$/;
+const MAX_MANIFEST_BYTES = 64 * 1024;
 
 function jsonResponse(
   body: unknown,
@@ -76,9 +67,23 @@ function applyPreflightHeaders(
   );
   headers.set(
     "access-control-allow-headers",
-    "Authorization, Content-Type, Content-Encoding, X-Proxy-Token",
+    "Authorization, Content-Type, Content-Encoding, X-Chunk-SHA256, X-Proxy-Token",
   );
   headers.set("access-control-max-age", "86400");
+}
+
+function withCors(
+  response: Response,
+  request: Request,
+  allowedOrigin: string,
+): Response {
+  const headers = new Headers(response.headers);
+  applyCors(headers, request, allowedOrigin);
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
 }
 
 function constantTimeEqual(left: string, right: string): boolean {
@@ -95,138 +100,245 @@ function constantTimeEqual(left: string, right: string): boolean {
   return difference === 0;
 }
 
-function buildUpstreamUrl(
-  baseUrl: URL,
-  incomingUrl: string,
-): URL {
-  const incoming = new URL(incomingUrl);
-  const upstream = new URL(baseUrl.toString());
-  const basePath = upstream.pathname.replace(/\/+$/, "");
-  const incomingPath = incoming.pathname.startsWith("/")
-    ? incoming.pathname
-    : `/${incoming.pathname}`;
-
-  upstream.pathname = `${basePath}${incomingPath}` || "/";
-  upstream.search = incoming.search;
-
-  return upstream;
-}
-
-function buildUpstreamHeaders(
+function requireAuthorizedToken(
   request: Request,
   config: RuntimeConfig,
-): Headers {
-  const headers = new Headers(request.headers);
-
-  for (const name of [
-    ...HOP_BY_HOP_HEADERS,
-    ...CLOUDFLARE_HEADERS,
-    "content-length",
-    "host",
-    "x-proxy-token",
-  ]) {
-    headers.delete(name);
+): void {
+  const suppliedToken = request.headers.get("x-proxy-token") ?? "";
+  if (!constantTimeEqual(suppliedToken, config.clientToken)) {
+    throw new ChunkProtocolError(
+      401,
+      "unauthorized",
+      "A valid X-Proxy-Token header is required.",
+    );
   }
-
-  headers.delete("content-encoding");
-  headers.set("accept-encoding", "identity");
-
-  if (config.upstreamApiKey) {
-    headers.set("authorization", `Bearer ${config.upstreamApiKey}`);
-  }
-
-  return headers;
 }
 
-async function relayUpstream(
+async function relayDirect(
   request: Request,
-  env: Env,
+  config: RuntimeConfig,
   dependencies: Dependencies,
 ): Promise<Response> {
-  let allowedOrigin = env.ALLOWED_ORIGIN?.trim() || "*";
+  const decodedBody = await decodeRequestBody(
+    request,
+    config.maxDecompressedBytes,
+  );
+  const incomingUrl = new URL(request.url);
+  const upstreamResponse = await forwardUpstream(
+    {
+      baseUrl: config.upstreamBaseUrl,
+      method: request.method,
+      path: incomingUrl.pathname,
+      query: incomingUrl.search.slice(1),
+      headers: new Headers(request.headers),
+      body: decodedBody,
+      timeoutMs: config.upstreamTimeoutMs,
+    },
+    config,
+    dependencies.fetch ?? ((upstreamRequest) => fetch(upstreamRequest)),
+  );
 
+  return withCors(upstreamResponse, request, config.allowedOrigin);
+}
+
+function internalChunkRequest(
+  action: string,
+  requestId: string,
+  request: Request,
+  body?: BodyInit,
+  extraHeaders: Record<string, string> = {},
+): Request {
+  const headers = new Headers({
+    "x-passproxy-chunk-action": action,
+    "x-passproxy-request-id": requestId,
+    ...extraHeaders,
+  });
+  if (body !== undefined) {
+    headers.set("content-type", "application/octet-stream");
+  }
+
+  return new Request(`https://chunk-session.internal/${action}`, {
+    method: action === "put-part" ? "PUT" : "POST",
+    headers,
+    body,
+  });
+}
+
+async function handleChunkRoute(
+  request: Request,
+  url: URL,
+  config: RuntimeConfig,
+  env: Env,
+): Promise<Response | null> {
+  const isStart = CREATE_SESSION_PATH.test(url.pathname);
+  const partMatch = UPLOAD_PART_PATH.exec(url.pathname);
+  const completeMatch = COMPLETE_SESSION_PATH.exec(url.pathname);
+
+  if (!isStart && !partMatch && !completeMatch) {
+    if (url.pathname.startsWith("/__chunks/")) {
+      throw new ChunkProtocolError(
+        404,
+        "session_not_found",
+        "The chunk session endpoint does not exist.",
+      );
+    }
+    return null;
+  }
+
+  if (!env.CHUNK_SESSIONS) {
+    throw new ConfigurationError(
+      "CHUNK_SESSIONS Durable Object binding is required.",
+    );
+  }
+
+  if (isStart) {
+    if (request.method !== "POST") {
+      throw new ChunkProtocolError(
+        405,
+        "invalid_manifest",
+        "Session creation requires POST.",
+      );
+    }
+    const body = await request.arrayBuffer();
+    if (body.byteLength === 0 || body.byteLength > MAX_MANIFEST_BYTES) {
+      throw new ChunkProtocolError(
+        400,
+        "invalid_manifest",
+        `The manifest must be between 1 and ${MAX_MANIFEST_BYTES} bytes.`,
+      );
+    }
+
+    const requestId = crypto.randomUUID();
+    const stub = env.CHUNK_SESSIONS.get(
+      env.CHUNK_SESSIONS.idFromName(requestId),
+    );
+    const response = await stub.fetch(
+      internalChunkRequest(
+        "start",
+        requestId,
+        request,
+        body,
+        { "content-type": "application/json" },
+      ),
+    );
+    return withCors(response, request, config.allowedOrigin);
+  }
+
+  if (partMatch) {
+    if (request.method !== "PUT") {
+      throw new ChunkProtocolError(
+        405,
+        "invalid_manifest",
+        "Part upload requires PUT.",
+      );
+    }
+
+    const requestId = partMatch[1] as string;
+    const index = partMatch[2] as string;
+    const checksum = request.headers.get("x-chunk-sha256");
+    if (!checksum) {
+      throw new ChunkProtocolError(
+        400,
+        "invalid_chunk_hash",
+        "X-Chunk-SHA256 is required.",
+      );
+    }
+
+    if (Number(index) >= 256) {
+      throw new ChunkProtocolError(
+        400,
+        "invalid_manifest",
+        "The chunk index is outside the protocol range.",
+      );
+    }
+
+    const body = await request.arrayBuffer();
+    if (body.byteLength > config.maxChunkBytes) {
+      throw new ChunkProtocolError(
+        413,
+        "chunk_too_large",
+        `A part cannot exceed ${config.maxChunkBytes} bytes.`,
+      );
+    }
+
+    const stub = env.CHUNK_SESSIONS.get(
+      env.CHUNK_SESSIONS.idFromName(requestId),
+    );
+    const response = await stub.fetch(
+      internalChunkRequest("put-part", requestId, request, body, {
+        "content-type": "application/octet-stream",
+        "x-chunk-index": index,
+        "x-chunk-sha256": checksum,
+      }),
+    );
+    return withCors(response, request, config.allowedOrigin);
+  }
+
+  if (completeMatch) {
+    if (request.method !== "POST") {
+      throw new ChunkProtocolError(
+        405,
+        "invalid_manifest",
+        "Session completion requires POST.",
+      );
+    }
+    const requestId = completeMatch[1] as string;
+    const stub = env.CHUNK_SESSIONS.get(
+      env.CHUNK_SESSIONS.idFromName(requestId),
+    );
+    const response = await stub.fetch(
+      internalChunkRequest("complete", requestId, request),
+    );
+    return withCors(response, request, config.allowedOrigin);
+  }
+
+  return null;
+}
+
+function protocolErrorResponse(
+  error: ChunkProtocolError,
+  request: Request,
+  allowedOrigin: string,
+): Response {
+  return jsonResponse(
+    {
+      error: {
+        code: error.code,
+        message: error.message,
+        ...(error.details ?? {}),
+      },
+    },
+    error.status,
+    request,
+    allowedOrigin,
+    error.code === "unauthorized"
+      ? { "www-authenticate": "Bearer" }
+      : {},
+  );
+}
+
+export async function handleRequest(
+  request: Request,
+  env: Env,
+  dependencies: Dependencies = {},
+): Promise<Response> {
+  const url = new URL(request.url);
+  const initialOrigin = env.ALLOWED_ORIGIN?.trim() || "*";
+
+  if (url.pathname === "/health" && request.method === "GET") {
+    return jsonResponse({ ok: true }, 200, request, initialOrigin);
+  }
+
+  if (request.method === "OPTIONS") {
+    const headers = new Headers();
+    applyPreflightHeaders(headers, request, initialOrigin);
+    return new Response(null, { status: 204, headers });
+  }
+
+  let config: RuntimeConfig;
   try {
-    const config = readConfig(env);
-    allowedOrigin = config.allowedOrigin;
-
-    const suppliedToken = request.headers.get("x-proxy-token") ?? "";
-    if (!constantTimeEqual(suppliedToken, config.clientToken)) {
-      return jsonResponse(
-        {
-          error: {
-            code: "unauthorized",
-            message: "A valid X-Proxy-Token header is required.",
-          },
-        },
-        401,
-        request,
-        allowedOrigin,
-        { "www-authenticate": "Bearer" },
-      );
-    }
-
-    const decodedBody = await decodeRequestBody(
-      request,
-      config.maxDecompressedBytes,
-    );
-    const upstreamUrl = buildUpstreamUrl(config.upstreamBaseUrl, request.url);
-    const upstreamHeaders = buildUpstreamHeaders(request, config);
-    const hasBody = decodedBody !== undefined;
-    const controller = new AbortController();
-    const timeout = setTimeout(
-      () => controller.abort(),
-      config.upstreamTimeoutMs,
-    );
-    const upstreamFetch: UpstreamFetch =
-      dependencies.fetch ?? ((upstreamRequest) => fetch(upstreamRequest));
-    let upstreamResponse: Response;
-
-    try {
-      const upstreamRequest = new Request(upstreamUrl, {
-        method: request.method,
-        headers: upstreamHeaders,
-        body: hasBody ? decodedBody : undefined,
-        signal: controller.signal,
-      });
-      upstreamResponse = await upstreamFetch(upstreamRequest);
-    } catch (error) {
-      if (error instanceof Error && error.name === "AbortError") {
-        return jsonResponse(
-          {
-            error: {
-              code: "upstream_timeout",
-              message: "The upstream service did not respond in time.",
-            },
-          },
-          504,
-          request,
-          allowedOrigin,
-        );
-      }
-
-      return jsonResponse(
-        {
-          error: {
-            code: "upstream_unreachable",
-            message: "The upstream request failed.",
-          },
-        },
-        502,
-        request,
-        allowedOrigin,
-      );
-    } finally {
-      clearTimeout(timeout);
-    }
-
-    const responseHeaders = new Headers(upstreamResponse.headers);
-    applyCors(responseHeaders, request, allowedOrigin);
-
-    return new Response(upstreamResponse.body, {
-      status: upstreamResponse.status,
-      statusText: upstreamResponse.statusText,
-      headers: responseHeaders,
-    });
+    config = readConfig(env);
+    requireAuthorizedToken(request, config);
   } catch (error) {
     if (error instanceof ConfigurationError) {
       return jsonResponse(
@@ -238,49 +350,86 @@ async function relayUpstream(
         },
         500,
         request,
-        allowedOrigin,
+        initialOrigin,
       );
     }
+    if (error instanceof ChunkProtocolError) {
+      return protocolErrorResponse(error, request, initialOrigin);
+    }
+    throw error;
+  }
 
-    if (error instanceof UnsupportedContentEncodingError) {
+  try {
+    const chunkResponse = await handleChunkRoute(request, url, config, env);
+    if (chunkResponse) {
+      return chunkResponse;
+    }
+    return await relayDirect(request, config, dependencies);
+  } catch (error) {
+    if (error instanceof ConfigurationError) {
       return jsonResponse(
         {
           error: {
-            code: "unsupported_content_encoding",
-            message: "Only gzip request bodies are supported.",
-          },
-        },
-        415,
-        request,
-        allowedOrigin,
-      );
-    }
-
-    if (error instanceof InvalidGzipError) {
-      return jsonResponse(
-        {
-          error: {
-            code: "invalid_gzip",
+            code: "configuration_error",
             message: error.message,
           },
         },
-        400,
+        500,
         request,
-        allowedOrigin,
+        config.allowedOrigin,
       );
     }
-
-    if (error instanceof PayloadTooLargeError) {
+    if (error instanceof ChunkProtocolError) {
+      return protocolErrorResponse(error, request, config.allowedOrigin);
+    }
+    if (
+      error instanceof InvalidGzipError ||
+      error instanceof PayloadTooLargeError ||
+      error instanceof UnsupportedContentEncodingError
+    ) {
+      const status =
+        error instanceof InvalidGzipError
+          ? 400
+          : error instanceof PayloadTooLargeError
+            ? 413
+            : 415;
+      const code =
+        error instanceof InvalidGzipError
+          ? "invalid_gzip"
+          : error instanceof PayloadTooLargeError
+            ? "payload_too_large"
+            : "unsupported_content_encoding";
+      return jsonResponse(
+        { error: { code, message: error.message } },
+        status,
+        request,
+        config.allowedOrigin,
+      );
+    }
+    if (error instanceof UpstreamTimeoutError) {
       return jsonResponse(
         {
           error: {
-            code: "payload_too_large",
+            code: "upstream_timeout",
             message: error.message,
           },
         },
-        413,
+        504,
         request,
-        allowedOrigin,
+        config.allowedOrigin,
+      );
+    }
+    if (error instanceof UpstreamUnreachableError) {
+      return jsonResponse(
+        {
+          error: {
+            code: "upstream_unreachable",
+            message: error.message,
+          },
+        },
+        502,
+        request,
+        config.allowedOrigin,
       );
     }
 
@@ -293,28 +442,7 @@ async function relayUpstream(
       },
       500,
       request,
-      allowedOrigin,
+      config.allowedOrigin,
     );
   }
-}
-
-export async function handleRequest(
-  request: Request,
-  env: Env,
-  dependencies: Dependencies = {},
-): Promise<Response> {
-  const url = new URL(request.url);
-  const allowedOrigin = env.ALLOWED_ORIGIN?.trim() || "*";
-
-  if (url.pathname === "/health" && request.method === "GET") {
-    return jsonResponse({ ok: true }, 200, request, allowedOrigin);
-  }
-
-  if (request.method === "OPTIONS") {
-    const headers = new Headers();
-    applyPreflightHeaders(headers, request, allowedOrigin);
-    return new Response(null, { status: 204, headers });
-  }
-
-  return relayUpstream(request, env, dependencies);
 }

@@ -520,6 +520,11 @@ export class ChunkSessionCore {
   }
 
   async cleanup(): Promise<void> {
+    await this.cleanupParts();
+    await this.storage.delete(SESSION_KEY);
+  }
+
+  async cleanupParts(): Promise<void> {
     const record = await this.storage.get<SessionRecord>(SESSION_KEY);
     if (!record) {
       return;
@@ -528,7 +533,6 @@ export class ChunkSessionCore {
       await this.storage.delete(`part:${index}`);
       await this.storage.delete(`part-meta:${index}`);
     }
-    await this.storage.delete(SESSION_KEY);
   }
 
   private async loadSession(): Promise<SessionRecord> {

@@ -7,9 +7,26 @@
   "observability": {
     "enabled": true
   },
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "CHUNK_SESSIONS",
+        "class_name": "ChunkSession"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["ChunkSession"]
+    }
+  ],
   "vars": {
     "ALLOWED_ORIGIN": "*",
     "MAX_DECOMPRESSED_BYTES": "2097152",
+    "MAX_COMPRESSED_BYTES": "8388608",
+    "MAX_CHUNK_BYTES": "98304",
+    "CHUNK_SESSION_TTL_MS": "900000",
     "UPSTREAM_TIMEOUT_MS": "600000"
   }
 }
