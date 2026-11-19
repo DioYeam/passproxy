@@ -7,7 +7,7 @@
   "scripts": {
     "dev": "wrangler dev",
     "dev:upstream": "node scripts/local-upstream.mjs",
-    "deploy": "wrangler deploy",
+    "deploy": "wrangler deploy --keep-vars",
     "test": "vitest run",
     "test:watch": "vitest",
     "smoke": "node scripts/smoke-test.mjs",

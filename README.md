@@ -161,6 +161,8 @@ https://passproxy.<你的Cloudflare子域名>.workers.dev
 | `MAX_DECOMPRESSED_BYTES` | 变量 | 否 | `2097152` |
 | `UPSTREAM_TIMEOUT_MS` | 变量 | 否 | `600000` |
 
+建议把 `UPSTREAM_BASE_URL` 也配置为 Secret，或保持使用 `npm run deploy`。项目部署命令已使用 `wrangler deploy --keep-vars`，避免重新部署时清除 Dashboard 中配置的普通变量。
+
 `UPSTREAM_BASE_URL` 可以带路径。例如：
 
 ```text
